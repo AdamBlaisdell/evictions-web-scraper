@@ -1,27 +1,85 @@
+import selenium.common.exceptions
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import NoSuchElementException
-from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.wait import WebDriverWait
+from selenium.webdriver.support import expected_conditions as ec
+from datetime import datetime
+import time
+import logging
+import os
 
-chrome_options = Options()
-chrome_options.add_argument('--headless')
-browser = webdriver.Chrome(options=chrome_options)
+
+# create files and logging folder if they don't exist
+filepath = 'files'
+if not os.path.exists(filepath):
+    os.makedirs(filepath)
+filepath2 = 'files/logging'
+if not os.path.exists(filepath2):
+    os.makedirs(filepath2)
+
+# configure log
+logging.basicConfig(
+    filename="files/logging/last_run.log",
+    filemode="w",
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 
 
-def get_table_data(table_name):
+# create driver and configure options
+options = webdriver.ChromeOptions()
+# doesn't display browser when running, can comment out
+options.add_argument("--headless=new")
+browser = webdriver.Chrome(options=options)
+
+
+def print_err(message):
+    yellow = '\033[93m'
+    off = '\033[0;0m'
+    print(yellow + message + off)
+
+
+# get the tables from case page
+def get_tables(case_num):
+    # wait 10 seconds for tables to load
+    timeout = 10
+    try:
+        # putting the timeout number directly in the wait parameters seems to cause a bug that makes the driver crash
+        tables = WebDriverWait(browser, timeout).until(ec.presence_of_all_elements_located((By.CLASS_NAME, "tableback")))
+    # returns error and quits if tables not found
+    except selenium.common.exceptions.TimeoutException:
+        now = datetime.now().strftime('%d-%m-%y-%H-%M-%S')
+        browser.save_screenshot(f'files/logging/err_{now}.png')
+        logging.critical(f'Error: Tables not found for case {case_num}')
+        print_err(f'Error: Tables not found for case {case_num}')
+        exit(1)
+    except selenium.common.exceptions.WebDriverException:
+        now = datetime.now().strftime('%d-%m-%y-%H-%M-%S')
+        browser.save_screenshot(f'files/logging/err_{now}.png')
+        logging.critical(f'Error: DRIVER ERROR for case {case_num}')
+        print_err(f'Error: DRIVER ERROR for case {case_num}')
+        exit(1)
+    return tables
+
+
+def get_table_data(table_name, tables, case_num):
     data = []
-    # get all tables
-    tables = browser.find_elements(By.CLASS_NAME, 'tableback')
     for table in tables:
         # find element by subheader table name
         try:
             sub_header = table.find_element(By.CLASS_NAME, 'subheader')
-        except NoSuchElementException as e:
-            print('\033[93m' + f'ERROR: Subheader name not found' + '\x1b[0m')
-            exit(1)
+        except NoSuchElementException:
+            # log if table name not found
+            logging.warning(f'Subheader "{table_name}" not found for case {case_num}')
+            print_err(f'    Warning: Subheader "{table_name}" not found for case {case_num}')
+            # return empty list if table not found
+            return []
         if sub_header.text == table_name:
             # expand collapsed tables
-            if sub_header.text == 'Service/Process' or sub_header.text == 'Reports' or sub_header.text == 'Garnishment Information':
+            if sub_header.text == 'Service/Process' or sub_header.text == 'Reports' \
+                    or sub_header.text == 'Garnishment Information':
                 sub_header.click()
             # return grid items
             grid_items = table.find_elements(By.CSS_SELECTOR, 'td.labelvaluegridright, td.labelvaluegridtopright')
@@ -30,23 +88,30 @@ def get_table_data(table_name):
 
             # return row items
             rows = table.find_elements(By.CSS_SELECTOR, 'tr.gridrow, tr.gridalternaterow')
-            for row in rows:
-                row_list = []
-                tds = row.find_elements(By.CSS_SELECTOR, 'td')
-                for td in tds:
-                    row_list.append(td.text.strip())
-                data.append(row_list)
+            if rows:
+                for row in rows:
+                    row_list = []
+                    tds = row.find_elements(By.CSS_SELECTOR, 'td')
+                    for td in tds:
+                        row_list.append(td.text.strip())
+                    data.append(row_list)
             return data
 
 
+# move browser to case, unused in main scraper
 def go_to_case(case_num):
+    time.sleep(.5)
     case_num_search_url = 'https://eapps.courts.state.va.us/gdcourts/criminalCivilCaseSearch.do?fromSidebar=true' \
                           '&formAction=searchLanding&searchDivision=V&searchFipsCode=510&curentFipsCode=510'
     while browser.current_url != case_num_search_url:
+        time.sleep(.5)
         browser.get(case_num_search_url)
+        if browser.find_elements(By.CLASS_NAME, 'boldred'):
+            print('too many requests error')
     # enter case number into search field
     browser.find_element(By.ID, 'displayCaseNumber').send_keys(case_num)
     # perform / click on search
+    # time.sleep(.7)
     browser.find_element(By.CLASS_NAME, 'submitBox').click()
     # No result found
     if browser.current_url == "https://eapps.courts.state.va.us/gdcourts/criminalCivilCaseSearch.do":
@@ -55,17 +120,23 @@ def go_to_case(case_num):
         return True
 
 
+# scrapes hearing and returns a list of items to be added as row to csv file
 def hearing_scrape(case_num):
-    # go to case
-    go_to_case(case_num)
-
     row_list = []
     # get case information table
-    case_information_list = get_table_data('Case Information')
+    tables = get_tables(case_num)
+    case_information_list = get_table_data('Case Information', tables, case_num)
+    # if table not found, take screenshot and exit
+    if not case_information_list:
+        now = datetime.now().strftime('%d-%m-%y-%H-%M-%S')
+        browser.save_screenshot(f'files/logging/err_{now}.png')
+        logging.critical(f'Error: Case information not found for case {case_num}')
+        print_err(f'Error: Case information not found for case {case_num}')
+        exit(1)
     row_list.extend(case_information_list)
 
     # get plaintiff information table
-    plaintiff_information_lists = get_table_data('Plaintiff Information')
+    plaintiff_information_lists = get_table_data('Plaintiff Information', tables, case_num)
     for plaintiff_list in plaintiff_information_lists:
         row_list.extend(plaintiff_list)
     # add null values for plaintiffs that don't exist up to 6
@@ -76,7 +147,7 @@ def hearing_scrape(case_num):
     row_list.extend([len(plaintiff_information_lists)])
 
     # get defendant information
-    defendant_information_lists = get_table_data('Defendant Information')
+    defendant_information_lists = get_table_data('Defendant Information', tables, case_num)
 
     for defendant_list in defendant_information_lists:
         row_list.extend(defendant_list)
@@ -92,38 +163,55 @@ def hearing_scrape(case_num):
     continuances = 0
     no_show_on_first = False
     any_default = False
-    # logic for number of continuances, no show on any court date, and no show on first court date
-    hearing_information_lists = get_table_data('Hearing Information')
-    if hearing_information_lists[len(hearing_information_lists) - 1][2] == 'Default Judgment':
-        no_show_on_first = True
-    for hearing_information_list in hearing_information_lists:
-        result = hearing_information_list[2]
-        if result == 'Continued':
-            continuances += 1
-        if result == 'Default Judgment':
-            any_default = True
-    row_list.extend([continuances])
-    row_list.extend([no_show_on_first])
-    row_list.extend([any_default])
+
+    hearing_information_lists = get_table_data('Hearing Information', tables, case_num)
+    if hearing_information_lists:
+        # logic for number of continuances, no show on any court date, and no show on first court date
+        if hearing_information_lists[len(hearing_information_lists) - 1][2] == 'Default Judgment':
+            no_show_on_first = True
+        for hearing_information_list in hearing_information_lists:
+            result = hearing_information_list[2]
+            if result == 'Continued':
+                continuances += 1
+            if result == 'Default Judgment':
+                any_default = True
+        row_list.extend([continuances])
+        row_list.extend([no_show_on_first])
+        row_list.extend([any_default])
+    else:
+        row_list.extend(['null', 'null', 'null'])
 
     # get service/process table
     # service row = person served, process type, date issued, date served, plaintiff, how served
-    service_lists = get_table_data('Service/Process')
+    service_lists = get_table_data('Service/Process', tables, case_num)
 
     for service_list in service_lists:
         row_list.extend(service_list)
     # add null values for persons served that don't exist up to 6
     for i in range(6 - len(service_lists)):
         for j in range(6):
-            row_list.extend(["null"])
+            row_list.extend(['null'])
     # number of persons served
     row_list.extend([len(service_lists)])
     # get judgement information
-    row_list.extend(get_table_data('Judgment Information'))
+    judgment_information_list = get_table_data('Judgment Information', tables, case_num)
+    row_list.extend(judgment_information_list)
+    # add null values if table is not found
+    if not judgment_information_list:
+        row_list.extend(['null', 'null', 'null', 'null', 'null', 'null', 'null', 'null', 'null', 'null', 'null', 'null',
+                         'null', '', 'null'])
     # get garnishment information
-    row_list.extend(get_table_data('Garnishment Information'))
+    garnishment_information_list = get_table_data('Garnishment Information', tables, case_num)
+    row_list.extend(garnishment_information_list)
+    # add null values if table is not found
+    if not garnishment_information_list:
+        row_list.extend(['null', 'null', 'null', 'null', 'null'])
     # get  appeal information
-    row_list.extend(get_table_data('Appeal Information'))
+    appeal_information_list = get_table_data('Appeal Information', tables, case_num)
+    row_list.extend(appeal_information_list)
+    # add null values if table is not found
+    if not appeal_information_list:
+        row_list.extend(['null', 'null'])
 
     return row_list
 
