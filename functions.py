@@ -43,24 +43,24 @@ def print_err(message):
 
 # get the tables from case page
 def get_tables(case_num):
-    # wait 10 seconds for tables to load
+    # wait 10 seconds for tables to load, webdriverwait.until expected condition intermittently caused driver to crash.
     timeout = 10
-    try:
-        # putting the timeout number directly in the wait parameters seems to cause a bug that makes the driver crash
-        tables = WebDriverWait(browser, timeout).until(ec.presence_of_all_elements_located((By.CLASS_NAME, "tableback")))
-    # returns error and quits if tables not found
-    except selenium.common.exceptions.TimeoutException:
-        now = datetime.now().strftime('%d-%m-%y-%H-%M-%S')
-        browser.save_screenshot(f'files/logging/err_{now}.png')
-        logging.critical(f'Error: Tables not found for case {case_num}')
-        print_err(f'Error: Tables not found for case {case_num}')
-        exit(1)
-    except selenium.common.exceptions.WebDriverException:
-        now = datetime.now().strftime('%d-%m-%y-%H-%M-%S')
-        browser.save_screenshot(f'files/logging/err_{now}.png')
-        logging.critical(f'Error: DRIVER ERROR for case {case_num}')
-        print_err(f'Error: DRIVER ERROR for case {case_num}')
-        exit(1)
+    wait = 0
+    tables = []
+    while not tables:
+        # get list of tables
+        tables = browser.find_elements(By.CLASS_NAME, "tableback")
+        if tables:
+            break
+        wait += 1
+        time.sleep(1)
+        # returns error and quits if tables not found
+        if wait >= timeout:
+            now = datetime.now().strftime('%d-%m-%y-%H-%M-%S')
+            browser.save_screenshot(f'files/logging/err_{now}.png')
+            logging.critical(f'Error: Tables not found for case {case_num}')
+            print_err(f'Error: Tables not found for case {case_num}')
+            exit(1)
     return tables
 
 
